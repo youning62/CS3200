@@ -1,0 +1,14 @@
+# Raw / licensed data (CRSP via WRDS must not be committed)
+data/
+*.csv
+*.parquet
+*.zip
+# Local DB dumps
+*.sql.gz
+dumps/
+# Python / OS
+__pycache__/
+.venv/
+.ipynb_checkpoints/
+.DS_Store
+.env
