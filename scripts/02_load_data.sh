@@ -3,14 +3,14 @@
 # 02_load_data.sh -- load the team's real-data dump into the v3.0 schema
 #
 # Usage:
-#   bash schema/02_load_data.sh <path/to/DumpYYYYMMDD.sql> [mysql client options]
+#   bash scripts/02_load_data.sh <path/to/DumpYYYYMMDD.sql> [mysql client options]
 #   e.g.
-#   bash schema/02_load_data.sh ~/Downloads/Dump20261126.sql -u root -p
+#   bash scripts/02_load_data.sh ~/Downloads/Dump20261126.sql -u root -p
 #
 # Why not just `mysql < dump.sql`?
 #   A full mysqldump contains its own DROP/CREATE TABLE statements. Loading it
 #   directly would replace our tables with the dump's own DDL and silently drop
-#   every CHECK constraint, index and NOT NULL rule in 01_create_tables.sql.
+#   every CHECK constraint, index and NOT NULL rule in sql/01_create_tables.sql.
 #   This script keeps ONLY the dump's INSERT statements and loads them into
 #   the tables 01_create_tables.sql created.
 #
@@ -19,7 +19,7 @@
 # off only because the dump inserts tables alphabetically (children before
 # parents); 03_validate_schema.sql verifies there are no orphans afterwards.
 #
-# Run order: 01_create_tables.sql -> 02_load_data.sh -> 03_validate_schema.sql
+# Run order: sql/01_create_tables.sql -> scripts/02_load_data.sh -> sql/03_validate_schema.sql
 # The dump contains licensed CRSP data: never commit it to git.
 # =============================================================================
 set -euo pipefail
@@ -61,4 +61,4 @@ echo "Loading $n_inserts INSERT statements from $DUMP into stock_analysis ..."
     echo "UNION ALL SELECT 'condition_industry_performance', COUNT(*) FROM condition_industry_performance;"
 } | mysql --max-allowed-packet=256M -t "$@"
 
-echo "Done. Next: mysql $* < schema/03_validate_schema.sql"
+echo "Done. Next: mysql $* < sql/03_validate_schema.sql"

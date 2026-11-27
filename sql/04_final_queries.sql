@@ -1,10 +1,10 @@
 -- =============================================================================
--- 30_final_queries.sql
+-- 04_final_queries.sql
 -- CS3200 Project: Analyzing Stock Market Performance Across Different
 --                 Macroeconomic Environments
 -- Database: stock_analysis (schema v3.0). Data: CRSP monthly + FRED, 2015-01 to 2025-12.
 --
--- Conventions used below (see schema/SCHEMA_CONTRACT.md):
+-- Conventions used below (see docs/SCHEMA_CONTRACT.md):
 --   * A month is "in" a condition when the indicator's value that month is
 --     >= min_value (if set) and < max_value (if set).
 --   * Returns are fractions; queries multiply by 100 only for display (%).

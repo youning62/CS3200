@@ -5,7 +5,7 @@
 **Database:** `stock_analysis` on MySQL 8.0.16+ (tested on 8.0.46)
 **Data:** `Dump20261126.sql` (team drive, **not** in git: it contains licensed CRSP data)
 
-This document describes the database exactly as the real data defines it. **If you need a rule changed, open a PR against `schema/` — do not change it locally.**
+This document describes the database exactly as the real data defines it.
 
 ### What changed from v2.0
 v2.0 was a design written before any data existed. v3.0 adopts the structure of the real-data dump, which was already internally consistent: both derived tables recompute exactly from the raw rows. v3.0 keeps the dump's columns unchanged and adds the strict rules from v2.0 on top: CHECK constraints, first-of-month dates, secondary indexes and explicit FK actions.
@@ -24,19 +24,24 @@ v2.0 was a design written before any data existed. v3.0 adopts the structure of 
 
 ---
 
-## 1. Files in `/schema`
+## 1. Repository Files
 
 | File | Purpose | When to run |
 |---|---|---|
-| `01_create_tables.sql` | Creates `stock_analysis` and all 8 tables with constraints. **Drops existing tables.** | Once on setup; again only after a schema change |
-| `02_load_data.sh` | Loads the data rows from the dump into those tables. Re-runnable: empties the tables first. | After 01, and whenever there is a new dump |
-| `03_validate_schema.sql` | Checks structure, keys, indexes and orphans, and fully recomputes both derived tables. Read-only. | After every load |
-| `SCHEMA_CONTRACT.md` | This document | Read before writing queries |
+| `sql/01_create_tables.sql` | Creates `stock_analysis` and all 8 tables with constraints. **Drops existing tables.** | Once on setup; again only after a schema change |
+| `scripts/02_load_data.sh` | Loads the data rows from the dump into those tables. Re-runnable: empties the tables first. | After 01, and whenever there is a new dump |
+| `sql/03_validate_schema.sql` | Checks structure, keys, indexes and orphans, and fully recomputes both derived tables. Read-only. | After every load |
+| `sql/04_final_queries.sql` | The analysis queries, each with its question in English | After loading |
+| `output/04_final_queries_output.txt` | Output of `04_final_queries.sql` on the real data | — |
+| `docs/SCHEMA_CONTRACT.md` | This document | — |
+
+Run from the repository root:
 
 ```bash
-mysql -u root -p < schema/01_create_tables.sql
-bash schema/02_load_data.sh ~/Downloads/Dump20261126.sql -u root -p
-mysql -u root -p < schema/03_validate_schema.sql
+mysql -u root -p < sql/01_create_tables.sql
+bash scripts/02_load_data.sh ~/Downloads/Dump20261126.sql -u root -p
+mysql -u root -p < sql/03_validate_schema.sql
+mysql -u root -p -t < sql/04_final_queries.sql
 ```
 
 > ⚠️ **Do not load the dump with `mysql < Dump20261126.sql` or Workbench "Import".** The dump has its own `CREATE TABLE` statements, which would replace our tables and silently remove all 14 CHECK constraints and 3 indexes. Validation catches this (4 FAILs in section 4). If you can't run bash (e.g. on Windows without Git Bash), re-export from Workbench with **"Dump Data Only"** and import that file after running `01_create_tables.sql`.
@@ -210,7 +215,7 @@ GROUP BY month;
 | `condition_industry_performance.avg_return` | `AVG(industry avg_return)` over those months |
 | `condition_industry_performance.avg_excess_return` | `AVG(industry return − market return)` over those months, where the market return is cap-weighted over all stocks |
 
-If you add a derived metric (e.g. volatility or a win rate), compute it in a **view** in `analytics_queries/`. Adding a column to a table would break reloading the dump, whose INSERTs have no column lists.
+If you add a derived metric (e.g. volatility or a win rate), compute it in a **view** or in the query itself. Adding a column to a table would break reloading the dump, whose INSERTs have no column lists.
 
 ---
 
@@ -227,9 +232,8 @@ If you add a derived metric (e.g. volatility or a win rate), compute it in a **v
 
 ---
 
-## 6. Team Workflow Rules
+## 6. Rules
 
-1. Only the schema owner edits `01_create_tables.sql`. Changes go through a PR that bumps the version at the top of this file.
-2. Columns must stay identical to the dump, in name, type and order. Anything new goes in views.
-3. A new data export must keep the same 8 tables and columns. Then re-run `02_load_data.sh` and `03_validate_schema.sql`, and don't share it with any FAIL.
-4. **Never commit dumps or CSVs** (licensed CRSP data). `.gitignore` excludes them. Share them through the team drive.
+1. Columns must stay identical to the dump, in name, type and order. Anything new goes in views or queries.
+2. A new data export must keep the same 8 tables and columns. Then re-run `scripts/02_load_data.sh` and `sql/03_validate_schema.sql`, and don't share it with any FAIL.
+3. **Never commit dumps or CSVs** (licensed CRSP data). `.gitignore` excludes them. Share them through the team drive.

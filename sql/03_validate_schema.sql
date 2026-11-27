@@ -1,13 +1,13 @@
 -- =============================================================================
 -- 03_validate_schema.sql   (schema v3.0: 8 tables, matches the real-data dump)
 -- Verifies structure (tables, PKs, FKs, indexes, CHECKs), referential
--- integrity, and the data rules in SCHEMA_CONTRACT.md, including a full
+-- integrity, and the data rules in docs/SCHEMA_CONTRACT.md, including a full
 -- recomputation of both derived tables.
 --
 -- Safe to run any time: read-only except for a TEMPORARY results table.
 -- Works on an EMPTY database too (data checks pass trivially).
 --
---   mysql -u <user> -p < schema/03_validate_schema.sql
+--   mysql -u <user> -p < sql/03_validate_schema.sql
 --
 -- Output: one row per check -> section | check_name | status | detail
 --   PASS / FAIL / WARN / INFO.   Any FAIL must be fixed before sharing data.
@@ -108,7 +108,7 @@ LEFT JOIN information_schema.REFERENTIAL_CONSTRAINTS r
 -- =============================================================================
 -- SECTION 4: Secondary / unique indexes and CHECK constraints
 --   (CHECK count = 14: fails if the dump's own DDL replaced ours, e.g. after
---    loading the dump with `mysql < dump.sql` instead of 02_load_data.sh)
+--    loading the dump with `mysql < dump.sql` instead of scripts/02_load_data.sh)
 -- =============================================================================
 INSERT INTO validation_results (section, check_name, status, detail)
 SELECT '4. Indexes & CHECKs',
@@ -141,7 +141,7 @@ SELECT '4. Indexes & CHECKs', 'CHECK constraints present and enforced',
        IF(COUNT(*) >= 14 AND COALESCE(SUM(ENFORCED = 'NO'), 0) = 0, 'PASS', 'FAIL'),
        CONCAT(COUNT(*), ' CHECK constraints (expected 14), ',
               COALESCE(SUM(ENFORCED = 'NO'), 0), ' not enforced; server ', VERSION(),
-              IF(COUNT(*) = 0, ' - did you load the dump with mysql < dump.sql? Use 02_load_data.sh', ''))
+              IF(COUNT(*) = 0, ' - did you load the dump with mysql < dump.sql? Use scripts/02_load_data.sh', ''))
 FROM information_schema.TABLE_CONSTRAINTS
 WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_TYPE = 'CHECK';
 

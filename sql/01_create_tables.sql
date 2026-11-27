@@ -16,7 +16,7 @@
 -- v3.0 adds, on top of the dump's own DDL: CHECK constraints, secondary
 -- indexes, NOT NULL where the data is always present, and explicit FK actions.
 --
--- Conventions (full detail in schema/SCHEMA_CONTRACT.md):
+-- Conventions (full detail in docs/SCHEMA_CONTRACT.md):
 --   * Every table is MONTHLY. Every `month` column is a DATE on the first day
 --     of the month (YYYY-MM-01), enforced with CHECK (DAY(month) = 1).
 --   * Returns are DECIMAL FRACTIONS (0.05 = +5%).
