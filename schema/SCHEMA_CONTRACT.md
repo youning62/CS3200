@@ -1,18 +1,26 @@
-# Schema Contract — v2.0 (Monthly-Only, 8 Tables)
+# Schema Contract — v3.0 (Matches the Real Data)
 
 **Project:** Analyzing Stock Market Performance Across Different Macroeconomic Environments
 **Team:** Martin Villa, Youning Zheng, Ryan Marshall, Corey Rattray
-**Database:** `stock_macro_db` on MySQL 8.0.16+ (tested on 8.0.46)
+**Database:** `stock_analysis` on MySQL 8.0.16+ (tested on 8.0.46)
+**Data:** `Dump20261126.sql` (team drive, **not** in git: it contains licensed CRSP data)
 
-This document is the single source of truth for how data gets into the database. If your ETL output follows these rules, it will load and join cleanly with everyone else's. **If you need a rule changed, open a PR against `schema/` — do not change it locally.**
+This document describes the database exactly as the real data defines it. **If you need a rule changed, open a PR against `schema/` — do not change it locally.**
 
-### What changed from v1.0
-* **Removed `daily_stock_prices`.** Stock data now comes straight from the CRSP **Monthly** Stock File, which already matches the monthly cadence of FRED.
-* **Removed `annual_economic_summary`.** Yearly figures are computed in queries (`GROUP BY YEAR(period_date)`), so we don't store a redundant copy.
-* **Removed mock data.** We go straight to real CRSP and FRED data. `02_reference_data.sql` holds only the real lookup definitions (industries and FRED series).
-* **`economic_data` is now strictly monthly.** Quarterly GDP is repeated across its three months, so every indicator has exactly one row per month.
-* Renamed `economic_data.observation_date` → `period_date`. Stock and macro tables now join on `period_date = period_date`.
-* Dropped `month_open_price`, which the CRSP monthly file doesn't provide. `trading_days` is now optional (NULL allowed).
+### What changed from v2.0
+v2.0 was a design written before any data existed. v3.0 adopts the structure of the real-data dump, which was already internally consistent: both derived tables recompute exactly from the raw rows. v3.0 keeps the dump's columns unchanged and adds the strict rules from v2.0 on top: CHECK constraints, first-of-month dates, secondary indexes and explicit FK actions.
+
+| Topic | v2.0 (design) | v3.0 (real data) |
+|---|---|---|
+| Database | `stock_macro_db` | `stock_analysis` |
+| Company key | `ticker` | `company_id` = CRSP PERMNO (tickers are reused, see §4.2) |
+| Date column | `period_date` | `month` |
+| Window | 2000–2024 | **2015-01 → 2025-12** (132 months) |
+| Universe | ~500 companies | **All CRSP common stocks**: 8,833 companies, ~4,800 per month |
+| Industries | Fama-French 12 | 11 sectors |
+| Macro values | Raw FRED levels | Ready-made percentages (Fed funds, CPI YoY, unemployment, real GDP growth) |
+| Conditions | Dated episodes | **Value ranges** on one indicator (Low / Moderate / High) |
+| Industry return | Equal-weighted + volatility | **Market-cap weighted** |
 
 ---
 
@@ -20,26 +28,20 @@ This document is the single source of truth for how data gets into the database.
 
 | File | Purpose | When to run |
 |---|---|---|
-| `01_create_tables.sql` | Creates the database and all 8 tables. **Drops existing tables**, including the removed v1.0 tables. | Once on setup; again only after a schema change |
-| `02_reference_data.sql` | Real lookup rows with **fixed IDs**: 12 Fama-French industries and 5 FRED series. Re-runnable (upsert) and never deletes data. | Right after 01, **before** any CRSP/FRED load |
-| `03_validate_schema.sql` | Checks structure, keys, indexes, reference data and data alignment. Read-only, and safe on empty tables. | After 01/02, and after every data load |
-| `SCHEMA_CONTRACT.md` | This document | Read before writing any ETL |
+| `01_create_tables.sql` | Creates `stock_analysis` and all 8 tables with constraints. **Drops existing tables.** | Once on setup; again only after a schema change |
+| `02_load_data.sh` | Loads the data rows from the dump into those tables. Re-runnable: empties the tables first. | After 01, and whenever there is a new dump |
+| `03_validate_schema.sql` | Checks structure, keys, indexes and orphans, and fully recomputes both derived tables. Read-only. | After every load |
+| `SCHEMA_CONTRACT.md` | This document | Read before writing queries |
 
 ```bash
 mysql -u root -p < schema/01_create_tables.sql
-mysql -u root -p < schema/02_reference_data.sql
+bash schema/02_load_data.sh ~/Downloads/Dump20261126.sql -u root -p
 mysql -u root -p < schema/03_validate_schema.sql
 ```
 
-Expected validation results:
+> ⚠️ **Do not load the dump with `mysql < Dump20261126.sql` or Workbench "Import".** The dump has its own `CREATE TABLE` statements, which would replace our tables and silently remove all 14 CHECK constraints and 3 indexes. Validation catches this (4 FAILs in section 4). If you can't run bash (e.g. on Windows without Git Bash), re-export from Workbench with **"Dump Data Only"** and import that file after running `01_create_tables.sql`.
 
-| State | PASS | WARN | FAIL |
-|---|---|---|---|
-| After 01 only (empty) | 56 | 2 (reference data not loaded) | 0 |
-| After 01 + 02 | 58 | 0 | 0 |
-| After real data loads | 58 | 0 (investigate any) | **0 (required)** |
-
-Section 8 of the report prints INFO rows: row counts per table, the stock universe size and the date ranges.
+**Expected result on `Dump20261126.sql`:** 50 PASS, 4 WARN, **0 FAIL**, 10 INFO. Load time is about 4 seconds. The 4 WARNs are known characteristics of the data (§5). On an empty schema the result is 54 PASS, 0 WARN, 0 FAIL.
 
 ---
 
@@ -49,247 +51,185 @@ Section 8 of the report prints INFO rows: row counts per table, the stock univer
 erDiagram
     industries ||--o{ companies : "classifies"
     companies ||--o{ monthly_stock_prices : "has"
-    economic_indicators ||--o{ economic_data : "observed as"
+    economic_indicators ||--o{ economic_data : "measured as"
+    economic_indicators ||--o{ economic_conditions : "defines ranges for"
     industries ||--o{ industry_monthly_returns : "aggregates to"
     industries ||--o{ condition_industry_performance : "scored in"
     economic_conditions ||--o{ condition_industry_performance : "scored in"
 
     industries {
-        SMALLINT industry_id PK
+        INT industry_id PK
         VARCHAR industry_name UK
-        VARCHAR sector_code UK
-        VARCHAR description
     }
     companies {
-        VARCHAR ticker PK
-        INT permno UK
+        INT company_id PK "CRSP PERMNO"
+        VARCHAR ticker "nullable, not unique"
         VARCHAR company_name
-        SMALLINT industry_id FK
-        ENUM exchange
-        ENUM active_status
+        INT industry_id FK
     }
     monthly_stock_prices {
-        VARCHAR ticker PK,FK
-        DATE period_date PK
-        DECIMAL month_close_price
+        INT company_id PK,FK
+        DATE month PK
+        DECIMAL close_price
         DECIMAL monthly_return
-        BIGINT total_volume
-        TINYINT trading_days
+        DECIMAL start_market_cap
     }
     economic_indicators {
-        SMALLINT indicator_id PK
-        VARCHAR indicator_code UK
-        VARCHAR indicator_name
-        ENUM native_frequency
-        ENUM monthly_alignment
-        VARCHAR units
+        INT indicator_id PK
+        VARCHAR indicator_name UK
+        VARCHAR unit
     }
     economic_data {
-        SMALLINT indicator_id PK,FK
-        DATE period_date PK
+        INT indicator_id PK,FK
+        DATE month PK
         DECIMAL value
     }
     economic_conditions {
         INT condition_id PK
-        VARCHAR condition_name
-        ENUM condition_category
-        DATE start_date
-        DATE end_date
-        VARCHAR criteria_description
+        VARCHAR condition_name UK
+        INT indicator_id FK
+        DECIMAL min_value
+        DECIMAL max_value
     }
     industry_monthly_returns {
-        SMALLINT industry_id PK,FK
-        DATE period_date PK
-        DECIMAL avg_monthly_return
-        DECIMAL volatility
-        INT stock_count
+        INT industry_id PK,FK
+        DATE month PK
+        DECIMAL avg_return
+        INT num_companies
     }
     condition_industry_performance {
         INT condition_id PK,FK
-        SMALLINT industry_id PK,FK
-        DECIMAL avg_monthly_return
-        DECIMAL win_rate_pct
-        DECIMAL excess_return_vs_market
-        SMALLINT sample_months
+        INT industry_id PK,FK
+        INT num_months
+        DECIMAL avg_return
+        DECIMAL avg_excess_return
     }
 ```
 
-The diagram renders on GitHub and in VS Code. For the EER slide in the presentation, use MySQL Workbench → *Database → Reverse Engineer* on `stock_macro_db`.
+The diagram renders on GitHub and in VS Code. For the EER slide, use MySQL Workbench → *Database → Reverse Engineer* on `stock_analysis` **after** `01_create_tables.sql`, so the diagram shows our constraints.
 
-There is deliberately **no foreign key between `economic_conditions` and `economic_data`**. A condition episode is a date range, not a single row. It links to months through `period_date BETWEEN start_date AND end_date` (§3.4).
-
-**Table roles**
-
-| Layer | Tables | Loaded by |
-|---|---|---|
-| Lookup (fixed IDs) | `industries`, `economic_indicators` | `02_reference_data.sql` |
-| Raw facts | `companies`, `monthly_stock_prices`, `economic_data` | `etl_stocks`, `etl_macro` |
-| Derived from macro | `economic_conditions` | `etl_macro` (regime classifier) |
-| Cross-domain derived | `industry_monthly_returns`, `condition_industry_performance` | `analytics_queries` (SQL `INSERT … SELECT`) |
-
-**Load order:** `01` → `02` → `companies` → `monthly_stock_prices` → `economic_data` → `economic_conditions` → `industry_monthly_returns` → `condition_industry_performance` → `03`.
+| Layer | Tables |
+|---|---|
+| Lookup | `industries`, `economic_indicators`, `economic_conditions` |
+| Raw facts | `companies`, `monthly_stock_prices`, `economic_data` |
+| Derived | `industry_monthly_returns`, `condition_industry_performance` |
 
 ---
 
-## 3. Date Granularity & Alignment Rules
+## 3. Dates & Joins
 
-**The rule: every row in every table is monthly, identified by a `DATE` on the first day of the month (`YYYY-MM-01`).** It is never a string like `'2024-01'`, never an integer like `202401`, and never the last day of the month. The DDL enforces this with `CHECK (DAY(col) = 1)`, so a misaligned row fails to insert.
+**Every table is monthly. Every `month` column is a `DATE` on the first day of the month (`YYYY-MM-01`).** This is enforced with `CHECK (DAY(month) = 1)`.
 
-### 3.1 CRSP Monthly Stock File (MSF) → `monthly_stock_prices`
-
-| Column | Source & rule |
-|---|---|
-| `period_date` | CRSP `DATE` is the last trading day of the month (e.g. `2024-01-31`). Map it to `2024-01-01`. pandas: `df.date.dt.to_period('M').dt.to_timestamp()`. SQL: `CAST(DATE_FORMAT(date, '%Y-%m-01') AS DATE)` |
-| `month_close_price` | `ABS(PRC)`. CRSP shows a negative `PRC` when it's a bid/ask midpoint. Unadjusted. |
-| `monthly_return` | CRSP `RET`: total return including dividends, already adjusted for splits. Stored as a fraction. **Don't compute it from prices**, because a split would look like a −50% crash. |
-| `total_volume` | CRSP MSF `VOL` **× 100**. MSF reports volume in hundreds of shares, and we store shares. |
-| `trading_days` | Number of NYSE trading days in the month. This is market-wide, so it's the same for every stock. Get it by counting days per month in the CRSP daily index file (DSI, one small row per trading day). Leave it NULL if you skip that. |
-
-* Skip rows where `PRC` is missing or 0, or where `RET` is missing or a letter code (`B`, `C`, …). `monthly_return` is `NOT NULL`.
-* Keep common stock only (`SHRCD IN (10, 11)`).
-* A stock's first month in CRSP often has no `RET`. Dropping that row is expected and doesn't count as a gap.
-
-### 3.2 FRED → `economic_data` (one row per indicator per month)
-
-| Series | FRED frequency | `monthly_alignment` | How to store it |
-|---|---|---|---|
-| `FEDFUNDS` | Monthly (average of daily rates) | `DIRECT` | FRED `2024-01-01` → `period_date 2024-01-01` |
-| `CPIAUCSL` | Monthly, SA | `DIRECT` | as above |
-| `UNRATE` | Monthly, SA | `DIRECT` | as above |
-| `GDP` | Quarterly, SAAR | `QUARTER_REPEAT` | FRED `2024-01-01` (Q1) → **three rows**: `2024-01-01`, `2024-02-01`, `2024-03-01`, all with the same value |
-| `GDPC1` | Quarterly, SAAR | `QUARTER_REPEAT` | as above |
-| *(any daily/weekly series added later)* | D / W | `MONTHLY_AVERAGE` | Average within each month and store on `YYYY-MM-01`. FRED's download page can do this (Frequency = Monthly, Aggregation = Average). |
-
-* **Coverage rule:** every month that has stock data must have a value for **every** indicator, and an indicator's series can't have internal gaps. Validation check 7a/7b fails otherwise.
-* **Store raw FRED levels only.** Do not store YoY inflation or GDP growth as new indicators. Compute them in SQL (§3.3) so there's one source of truth.
-* FRED writes missing values as `.`. Drop those rows; never load them as 0.
-* Pull a few months **before** the stock window starts (at least 12). YoY inflation for Jan 2000 needs CPI from Jan 1999. Validation only requires macro coverage for months that have stock data, so the extra history is fine.
-
-### 3.3 Joining stocks to macro data (tested patterns)
-
-Because every indicator has one row per month, every join is a plain equality join:
+* CRSP month-end dates were mapped to the first of the month (`2024-01-31` → `2024-01-01`).
+* Real GDP growth is quarterly. Its value is repeated in all three months of the quarter (validated in 6b).
+* Stocks and macro data therefore join directly on `month`:
 
 ```sql
--- Any indicator, monthly or quarterly: same join
-JOIN economic_data ff
-  ON ff.indicator_id = (SELECT indicator_id FROM economic_indicators WHERE indicator_code = 'FEDFUNDS')
- AND ff.period_date  = m.period_date
+-- Stock returns alongside the Fed funds rate
+SELECT c.ticker, m.month, m.monthly_return, ff.value AS fed_funds
+FROM monthly_stock_prices m
+JOIN companies c       ON c.company_id = m.company_id
+JOIN economic_data ff  ON ff.month = m.month
+                      AND ff.indicator_id = (SELECT indicator_id FROM economic_indicators
+                                             WHERE indicator_name = 'Federal Funds Rate');
 
--- Year-over-year CPI inflation (%) for month cur
-100 * (cur.value / prev.value - 1)       -- prev.period_date = cur.period_date - INTERVAL 12 MONTH
+-- Months in a condition (min inclusive, max exclusive)
+SELECT d.month
+FROM economic_conditions ec
+JOIN economic_data d ON d.indicator_id = ec.indicator_id
+                    AND (ec.min_value IS NULL OR d.value >= ec.min_value)
+                    AND (ec.max_value IS NULL OR d.value <  ec.max_value)
+WHERE ec.condition_name = 'High Inflation';
 
--- Real GDP growth, quarter-over-quarter annualized (%), valid in every month
--- because quarterly values are repeated
-100 * (POW(cur.value / prev.value, 4) - 1)   -- prev.period_date = cur.period_date - INTERVAL 3 MONTH
-
--- Yearly figures (replaces the old annual_economic_summary table)
-SELECT YEAR(period_date) AS yr, AVG(value) AS avg_fed_funds
-FROM economic_data WHERE indicator_id = 1 GROUP BY YEAR(period_date);
+-- Market return per month (cap-weighted, all stocks), the benchmark for excess returns
+SELECT month, SUM(monthly_return * start_market_cap) / SUM(start_market_cap) AS market_return
+FROM monthly_stock_prices
+WHERE monthly_return IS NOT NULL AND start_market_cap IS NOT NULL
+GROUP BY month;
 ```
 
 *Known limitation (put this in the write-up):* GDP for a quarter is published about a month after the quarter ends. We assign it to the quarter's own months, so this is a descriptive study, not a tradable signal.
 
-### 3.4 Economic-condition episodes
-
-* One row in `economic_conditions` = one **episode**: a contiguous run of months that meets a rule. The same `condition_name` can have several episodes, each with its own `condition_id`.
-* `start_date` = first month in the regime. `end_date` = **first day of the last month** in the regime. Both are inclusive. `end_date IS NULL` means the episode is still running at the end of our data.
-* A month belongs to an episode when `period_date BETWEEN start_date AND COALESCE(end_date, '9999-12-01')`.
-* Episodes of the same `condition_name` must not overlap (validated). Episodes of *different* conditions can overlap; for example, a month can be both "High Inflation" and "High Interest Rate".
-* Starting rules (proposed; etl_macro can tune them, but must record the exact rule in `criteria_description`):
-
-| condition_name | category | Rule (≥ 3 consecutive months) |
-|---|---|---|
-| High Interest Rate | INTEREST_RATE | `FEDFUNDS ≥ 4.00` |
-| Low Interest Rate | INTEREST_RATE | `FEDFUNDS ≤ 1.00` |
-| High Inflation | INFLATION | CPI YoY `≥ 4.00%` |
-| Low Inflation | INFLATION | CPI YoY `≤ 1.50%` |
-| High Unemployment | LABOR | `UNRATE ≥ 6.50` |
-| Economic Contraction | GROWTH | Real GDP (GDPC1) QoQ annualized growth `< 0` |
-| Strong Growth | GROWTH | Real GDP QoQ annualized growth `≥ 3.00%` |
-| Stagflation | COMPOSITE | CPI YoY `≥ 4.00%` **and** `UNRATE ≥ 5.50` in the same month |
-
 ---
 
-## 4. Data Types & Units
+## 4. Tables, Units & Definitions
 
-### 4.1 Unit convention (the most important rule in this document)
+### 4.1 Units
 
-| Column name pattern | Unit | Example | Type |
+| Column | Unit | Example |
+|---|---|---|
+| `monthly_return`, `avg_return`, `avg_excess_return` | **Decimal fraction** | `0.05` = +5% |
+| `economic_data.value`, `min_value`, `max_value` | **Percent points** | `5.33` = 5.33% |
+| `start_market_cap` | **USD thousands**, at the previous month-end | `1107984309.60` ≈ $1.1 trillion |
+| `close_price` | USD, unadjusted | |
+
+### 4.2 Companies
+
+* `company_id` is the **CRSP PERMNO**: one permanent number per security.
+* `ticker` is informational only. It is **not unique**: CRSP reassigns tickers over the years, so the 8,794 companies that have a ticker share only 8,533 distinct tickers (e.g. `CCC` belongs to 3 companies). It can also be NULL (39 companies). **Always join on `company_id`, never on `ticker`.**
+* Tickers that are present match `^[A-Z0-9]{1,8}([.][A-Z])?$` (enforced).
+
+### 4.3 Lookup values (fixed IDs)
+
+`industries` (11):
+
+| id | name | id | name |
 |---|---|---|---|
-| `*_return`, `volatility` | **Decimal fraction** | `0.0123` = +1.23% | `DECIMAL(10,6)` |
-| `*_pct` | **Percent points** | `55.00` = 55% | `DECIMAL(6,2)` |
-| FRED `value` | The units in `economic_indicators.units` (as FRED publishes them) | `5.33`, `309.685`, `28624.069` | `DECIMAL(18,6)` |
+| 1 | Technology | 7 | Consumer Staples |
+| 2 | Telecommunications | 8 | Industrials |
+| 3 | Health Care | 9 | Basic Materials |
+| 4 | Financials | 10 | Energy |
+| 5 | Real Estate | 11 | Utilities |
+| 6 | Consumer Discretionary | | |
 
-CRSP `RET` is already a fraction, so load it as is. FRED rates are already in percent, so load them as is. **Never multiply or divide by 100 during loading.** The one exception is CRSP volume (× 100 to convert hundreds of shares to shares). Validation warns about returns above +300% and about "Percent" series whose values are all ≤ 1, because both usually mean a unit mistake.
+`economic_indicators` (4):
 
-### 4.2 Column types
-
-| Kind | MySQL type | Notes |
+| id | name | unit / FRED source |
 |---|---|---|
-| Prices | `DECIMAL(12,4)` | Always positive. |
-| Returns | `DECIMAL(10,6)` | Must be `≥ −1`. CRSP gives 6 decimal places. |
-| Volume | `BIGINT UNSIGNED` | Shares. |
-| Dates | `DATE` | ISO `YYYY-MM-01` in CSVs. Never `DATETIME`, strings or integers. |
-| Surrogate IDs | `SMALLINT UNSIGNED` / `INT UNSIGNED` | Lookup IDs are **fixed** by `02_reference_data.sql`. |
-| Floats | — | **Never use `FLOAT`/`DOUBLE`** for stored values. Pandas floats are fine; MySQL rounds them into `DECIMAL` on insert. |
+| 1 | Federal Funds Rate | Percent (FEDFUNDS) |
+| 2 | Inflation Rate | Percent, CPI year over year (CPIAUCSL) |
+| 3 | Unemployment Rate | Percent (UNRATE) |
+| 4 | Real GDP Growth | Percent, annualized, quarterly value (A191RL1Q225SBEA) |
 
-### 4.3 Ticker standardization
+`economic_conditions` (12): three ranges per indicator. Min is inclusive, max is exclusive, and NULL means no bound. Validation 6c checks that every macro value falls in **exactly one** range of its indicator.
 
-* Allowed format: uppercase ASCII letters and digits, 1–8 characters, plus an optional `.X` share-class suffix. Regex: `^[A-Z0-9]{1,8}([.][A-Z])?$`. Examples: `AAPL`, `XOM`, `BRK.B`. Not allowed: `aapl`, `BRK B`, `BRK-B`, `BRK/B`.
-* Build it from CRSP as `UPPER(TRIM(TICKER))`, and add `'.' + SHRCLS` when CRSP has a share class.
-* Ticker columns are `VARCHAR(10) CHARACTER SET ascii COLLATE ascii_bin` (case-sensitive). A CHECK constraint rejects anything else.
-* **One ticker ↔ one PERMNO.** `permno` is `NOT NULL UNIQUE`. CRSP reuses tickers over time, so use the most recent ticker for each PERMNO in our window. If two PERMNOs end up with the same ticker, stop and tell the schema owner; don't invent a suffix.
+| Indicator | Low | Moderate | High |
+|---|---|---|---|
+| Fed funds | < 1 (Low Interest Rates) | 1 – 3 | ≥ 3 (High Interest Rates) |
+| Inflation | < 2 | 2 – 4 | ≥ 4 |
+| Unemployment | < 4 | 4 – 6 | ≥ 6 |
+| Real GDP growth | < 0 (GDP Contraction) | 0 – 3 | ≥ 3 (Strong GDP Growth) |
 
-### 4.4 Fixed lookup IDs (do not renumber)
+### 4.4 Derived tables (validation recomputes both)
 
-`industries` — **Fama-French 12** classification, mapped from CRSP `SICCD` with Ken French's `Siccodes12` file:
-
-| id | code | name | id | code | name |
-|---|---|---|---|---|---|
-| 1 | NODUR | Consumer NonDurables | 7 | TELCM | Telecom |
-| 2 | DURBL | Consumer Durables | 8 | UTILS | Utilities |
-| 3 | MANUF | Manufacturing | 9 | SHOPS | Shops |
-| 4 | ENRGY | Energy | 10 | HLTH | Healthcare |
-| 5 | CHEMS | Chemicals | 11 | MONEY | Finance |
-| 6 | BUSEQ | Business Equipment (Tech) | 12 | OTHER | Other (**also used when SIC is missing or unmapped**) |
-
-`economic_indicators`: `1 FEDFUNDS`, `2 CPIAUCSL`, `3 GDP`, `4 GDPC1`, `5 UNRATE`. New series get the next free ID through a PR to `02_reference_data.sql`.
-
-**ETL must look up IDs by code** (`sector_code`, `indicator_code`). Never hard-code IDs that aren't in this table.
-
-### 4.5 Other CRSP rules
-
-* `exchange`: `EXCHCD` 1 = `NYSE`, 2 = `AMEX`, 3 = `NASDAQ`, anything else = `OTHER`.
-* **Keep delisted firms** (`active_status = 'DELISTED'`). Dropping them causes survivorship bias. Optional: fold CRSP `DLRET` into the final month's return.
-
-### 4.6 Derived-metric definitions
-
-| Metric | Definition |
+| Table.column | Definition |
 |---|---|
-| Market return (month) | Equal-weighted `AVG(monthly_return)` over **all** stocks in `monthly_stock_prices` that month. Compute it in a view; don't store it. |
-| `industry_monthly_returns.avg_monthly_return` | Equal-weighted `AVG(monthly_return)` of the industry's stocks |
-| `industry_monthly_returns.volatility` | Cross-sectional `STDDEV_SAMP` of those returns; `NULL` if `stock_count < 2` |
-| `condition_industry_performance.avg_monthly_return` | `AVG` of the industry's monthly averages over the episode's months |
-| `win_rate_pct` | `100 ×` share of episode months where the industry return was `> 0` |
-| `excess_return_vs_market` | Industry avg return − market avg return over the same months |
-| `sample_months` | Number of episode months with data |
+| `industry_monthly_returns.avg_return` | `SUM(monthly_return × start_market_cap) / SUM(start_market_cap)` over the industry's stocks that month, using only rows where both values are present |
+| `industry_monthly_returns.num_companies` | Number of stocks used in that weighted average |
+| `condition_industry_performance.num_months` | Number of months where the condition held |
+| `condition_industry_performance.avg_return` | `AVG(industry avg_return)` over those months |
+| `condition_industry_performance.avg_excess_return` | `AVG(industry return − market return)` over those months, where the market return is cap-weighted over all stocks |
 
-`03_validate_schema.sql` recomputes both derived tables from source. It fails on any wrong value, on an industry-month that should exist but doesn't, and on a stale row that has no source data.
+If you add a derived metric (e.g. volatility or a win rate), compute it in a **view** in `analytics_queries/`. Adding a column to a table would break reloading the dump, whose INSERTs have no column lists.
 
 ---
 
-## 5. Scope (confirm as a team)
+## 5. Known Data Characteristics (the 4 WARNs)
 
-* **Dates:** 2000-01 through 2024-12 (300 months). This covers the dot-com bust, the GFC, ZIRP, COVID and the 2022–23 inflation and rate-hike cycle. Pull FRED from 1999-01 so YoY measures exist from the first month.
-* **Universe: ~500 US companies.** Recommended: **historical S&P 500 members** from the CRSP S&P 500 constituent file (`crsp.msp500list` on WRDS). Keep each stock's monthly rows only for the months it was in the index. That gives about 500 stocks per month, includes companies later removed or delisted (no survivorship bias), and lands at roughly **150,000 monthly rows**. If you use today's S&P 500 list instead, the write-up must say the results favor survivors.
-* **Bulk loading:** use `LOAD DATA LOCAL INFILE` from CSV (start the client with `--local-infile=1`).
+| WARN | Count | What it means / what to do |
+|---|---|---|
+| Missing macro months | Oct 2025 Inflation + Unemployment | BLS never published October 2025 CPI/UNRATE because of the government shutdown. That month is simply absent from those indicators' conditions. Mention it in the write-up. |
+| Empty stock rows | 4,437 rows with no price, return or cap | They are excluded from every weighted calculation. Filter with `WHERE monthly_return IS NOT NULL` in queries. |
+| Extreme returns > +300% | 283 rows (max +3,900%) | Almost all micro-caps. Cap weighting makes their effect on industry returns negligible. Be careful with **equal-weighted** or per-stock queries (consider `WHERE start_market_cap > …`). |
+| NULL tickers | 39 companies | Identify them by `company_id` / `company_name`. |
+
+**Scope consequences for the analysis:** 2015–2025 covers ZIRP, COVID and the 2022–23 inflation/rate-hike cycle, but **not** the 2008 GFC or the dot-com bust. Some conditions have few months (GDP Contraction: 9, High Unemployment: 13), so say that those averages are noisy.
 
 ---
 
 ## 6. Team Workflow Rules
 
-1. Only the schema owner edits `01_create_tables.sql` and `02_reference_data.sql`. Changes go through a PR that bumps the version at the top of this file.
-2. Each workstream works only in its own folder (`etl_stocks/`, `etl_macro/`, `analytics_queries/`). That way there are no merge conflicts.
-3. ETL scripts write CSVs whose column names and order **exactly match** the target table, then load them with `LOAD DATA`.
-4. Run `03_validate_schema.sql` after every load. Don't merge or share a dump with any FAIL.
-5. Don't commit raw CRSP extracts to git (WRDS license). `.gitignore` already excludes `*.csv` and `data/`. Share data through the team drive.
+1. Only the schema owner edits `01_create_tables.sql`. Changes go through a PR that bumps the version at the top of this file.
+2. Columns must stay identical to the dump, in name, type and order. Anything new goes in views.
+3. A new data export must keep the same 8 tables and columns. Then re-run `02_load_data.sh` and `03_validate_schema.sql`, and don't share it with any FAIL.
+4. **Never commit dumps or CSVs** (licensed CRSP data). `.gitignore` excludes them. Share them through the team drive.

@@ -1,16 +1,15 @@
-# etl_macro — FRED monthly pull & regime classification
+# etl_macro — FRED macro data and conditions
 
 **Owner:** Ryan
-**Owns tables:** `economic_data`, `economic_conditions` (new series → PR to `schema/02_reference_data.sql`)
-**Reads:** FRED series FEDFUNDS, CPIAUCSL, GDP, GDPC1, UNRATE (CSV download or FRED API)
-**Rules:** `schema/SCHEMA_CONTRACT.md` §3.2–3.4, §4.1
+**Produces tables:** `economic_indicators`, `economic_data`, `economic_conditions`, `condition_industry_performance`
+**Rules:** `schema/SCHEMA_CONTRACT.md` §3, §4.3–4.4
 
-Deliverables:
-1. `economic_data.csv` with columns `indicator_id, period_date, value`, **one row per indicator per month**, 1999-01 → 2024-12
-   - monthly series: FRED dates unchanged
-   - GDP / GDPC1: each quarterly value repeated in all 3 months of its quarter
-   - look up indicator_id by indicator_code; drop FRED '.' rows
-2. A regime classifier (rules in contract §3.4: ≥ 3 consecutive months) → `economic_conditions.csv`
-3. `load_macro.sql` (`LOAD DATA LOCAL INFILE`)
+Current data: 4 indicators (FEDFUNDS, CPI YoY from CPIAUCSL, UNRATE, real GDP growth A191RL1Q225SBEA),
+monthly 2015-01 → 2025-12; quarterly GDP growth repeated across each quarter's months;
+12 conditions = Low/Moderate/High value ranges per indicator (min inclusive, max exclusive).
+Oct 2025 CPI/UNRATE are absent (never published: 2025 government shutdown).
 
-Done when `schema/03_validate_schema.sql` shows 0 FAIL on checks 7a–7c and 7f, and no WARN on 7g/7k.
+To do:
+1. Commit the FRED download/transform script(s) here (CPI YoY calculation, quarterly repeat).
+2. If thresholds change, update `economic_conditions` and rebuild `condition_industry_performance`.
+   `schema/03_validate_schema.sql` check 6c must still PASS (each value in exactly one range).

@@ -12,3 +12,7 @@ __pycache__/
 .ipynb_checkpoints/
 .DS_Store
 .env
+# Database dumps (contain licensed CRSP data)
+Dump*.sql
+*dump*.sql
+*.dump
